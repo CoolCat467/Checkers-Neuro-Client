@@ -8,6 +8,8 @@
 
 <!-- END BADGIE TIME -->
 
+## As of writing, currently a Work in Progress
+
 ## Installation
 Ensure Python 3 is installed, and use pip to install this project.
 
