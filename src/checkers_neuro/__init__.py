@@ -32,18 +32,22 @@ from typing import TYPE_CHECKING
 
 import trio
 from checkers.client import read_advertisements
-from checkers.state import Action
 from checkers_computer_players import machine_client
 from libcomponent.component import (
     Event,
     ExternalRaiseManager,
 )
+from neuro_api.command import Action as CommandAction
 from neuro_api.event import NeuroAPIComponent
 
 if sys.version_info < (3, 11):
     from exceptiongroup import BaseExceptionGroup
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from checkers.state import Action as GameAction, Pos, State
+    from neuro_api.api import NeuroAction
     from trio_websocket import WebSocketConnection
 
 
@@ -52,23 +56,212 @@ class ComputerPlayer(machine_client.BaseRemoteState):
 
     __slots__ = ()
 
+    def bind_handlers(self) -> None:
+        """Register event handlers."""
+        super().bind_handlers()
+
+        self.register_handlers(
+            {
+                "submit_move": self.handle_submit_move,
+                "network_stop": self.handle_network_stop,
+            },
+        )
+
+    async def base_perform_turn(self) -> None:
+        """Perform turn."""
+        self.moves += 1
+        winner = self.state.check_for_win()
+        if winner is not None:
+            print("Terminal state, not performing turn")
+            value = ("Lost", "Won")[winner == self.playing_as]
+            message = f"{value} after {self.moves} moves"
+            print(message)
+            await self.raise_event(
+                Event("send_neuro_context", (f"You {message}", False), 1),
+            )
+            return
+        await self.handle_perform_turn()
+
+    async def handle_action_complete(
+        self,
+        event: Event[tuple[Pos, Pos, int]],
+    ) -> None:
+        """Perform action on internal state and perform our turn if possible."""
+        from_pos, to_pos, turn = event.data
+        action = self.state.action_from_points(from_pos, to_pos)
+        self.state = self.state.perform_action(action)
+        ##        print(f'{turn = }')
+        if turn == self.playing_as:
+            await self.base_perform_turn()
+        else:
+            state_context = build_state_context(self.state)
+            await self.raise_event(
+                Event(
+                    "send_neuro_context",
+                    (
+                        f"Opponent moved from {from_pos} to {to_pos}\n{state_context}",
+                        True,
+                    ),
+                    1,
+                ),
+            )
+
     async def handle_perform_turn(self) -> None:
         """Perform turn."""
-        print("preform_turn")
-        print(str(self.state))
-        action = Action((0, 0), (1, 1))
+        print("Neuro's Turn")
+        await self.raise_event(
+            Event(
+                "need_take_action",
+                self.state,
+                1,
+            ),
+        )
+
+    async def handle_submit_move(self, event: Event[GameAction]) -> None:
+        """Handle submit move event."""
+        action = event.data
         await self.perform_action(action)
-        raise NotImplementedError()
+
+    async def handle_network_stop(self, event: Event[None]) -> None:
+        """Handle network stop event."""
+        await self.raise_event(
+            Event(
+                "send_neuro_context",
+                ("The checkers game has ended.", True),
+                1,
+            ),
+        )
+
+
+def build_state_context(state: State) -> str:
+    """Build game state context."""
+    width, height = state.size
+    separator = "═" * width
+
+    lines = ["Current game board:"]
+    lines.append(f"╔{separator}╗")
+    lines.extend(
+        f"║{line.replace(' ', '░')}║" for line in str(state).splitlines()
+    )
+    lines.append(f"╚{separator}╝")
+    lines.append("`+` -> Black Pawn")
+    lines.append("`-` -> Red Pawn")
+    lines.append("`O` -> Black King")
+    lines.append("`X` -> Red King")
+    lines.append("Top-left is (0, 0), x is row, y is column")
+    lines.append(f"({width - 1}, {height - 1}) is bottom right")
+    return "\n".join(lines)
 
 
 class NeuroComponent(NeuroAPIComponent):
     """Neuro Component."""
 
-    __slots__ = ()
+    __slots__ = ("handshake_failure_callback",)
 
-    def __init__(self, websocket: WebSocketConnection | None = None) -> None:
+    def __init__(
+        self,
+        websocket: WebSocketConnection | None = None,
+        handshake_failure_callback: Callable[[], None] | None = None,
+    ) -> None:
         """Initialize Neuro Component."""
         super().__init__("NeuroComponent", "Checkers", websocket)
+
+        self.handshake_failure_callback = handshake_failure_callback
+
+    def bind_handlers(self) -> None:
+        """Register event handlers."""
+        super().bind_handlers()
+
+        self.register_handlers(
+            {
+                "neuro_connect": self.handle_connect,
+                "need_take_action": self.handle_need_take_action,
+                "client_connect": self.handle_client_connect,
+                "send_neuro_context": self.handle_send_neuro_context,
+            },
+        )
+
+    async def handle_client_connect(
+        self,
+        event: Event[tuple[str, int]],
+    ) -> None:
+        """Handle game client connect event."""
+        await self.send_startup_command()
+
+        address = event.data
+
+        await self.send_context(
+            f"You are playing a new checkers game on {address}.",
+            silent=True,
+        )
+
+    async def handle_send_neuro_context(
+        self,
+        event: Event[tuple[str, bool]],
+    ) -> None:
+        """Handle send neuro context event."""
+        message, silent = event.data
+        await self.send_context(message, silent)
+
+    def websocket_connect_failed(self) -> None:
+        """Call handshake_failure_callback if it's set."""
+        if self.handshake_failure_callback is None:
+            return
+        self.handshake_failure_callback()
+
+    def build_game_action_fires(
+        self,
+        game_action: GameAction,
+    ) -> Callable[[NeuroAction], Awaitable[tuple[bool, str | None]]]:
+        """Return NeuroAction handler from a checkers game action."""
+        from_pos, to_pos = game_action
+
+        async def trigger_game_action(
+            neuro_action: NeuroAction,
+        ) -> tuple[bool, str | None]:
+            """Raise submit move event for associated game action."""
+            await self.raise_event(
+                Event(
+                    "submit_move",
+                    game_action,
+                ),
+            )
+            return True, f"Moving piece from {from_pos} to {to_pos}"
+
+        return trigger_game_action
+
+    @staticmethod
+    def game_action_to_command_action(
+        game_action: GameAction,
+    ) -> CommandAction:
+        """Convert game state action to Neuro action."""
+        from_pos, to_pos = game_action
+        from_x, from_y = from_pos
+        to_x, to_y = to_pos
+        return CommandAction(
+            f"move_from_{from_x}_{from_y}_to_{to_x}_{to_y}",
+            f"Move the piece from {from_pos} to {to_pos}, jumping any pieces on the way.",
+            schema={},
+        )
+
+    async def handle_need_take_action(self, event: Event[State]) -> None:
+        """Handle need to take action event."""
+        state = event.data
+
+        action_names = await self.register_temporary_actions_group(
+            (
+                self.game_action_to_command_action(game_action),
+                self.build_game_action_fires(game_action),
+            )
+            for game_action in state.get_all_actions(int(state.get_turn()))
+        )
+        state_data = build_state_context(state)
+        print(state_data)
+        await self.send_force_action(
+            state=state_data,
+            query="It is now your turn. Please perform an action.",
+            action_names=action_names,
+        )
 
 
 async def run_client(
@@ -77,28 +270,29 @@ async def run_client(
     port: int,
 ) -> None:
     """Run machine client and raise tick events."""
-    async with trio.open_nursery():
-        client = machine_client.MachineClient(ComputerPlayer)
-        with event_manager.temporary_component(client):
-            async with client.client_with_block():
+    client = machine_client.MachineClient(ComputerPlayer)
+    with event_manager.temporary_component(client):
+        async with client.client_with_block():
+            await event_manager.raise_event(
+                Event("client_connect", (host, port)),
+            )
+            print(f"Connected to server {host}:{port}")
+            try:
+                while client.running:  # noqa: ASYNC110
+                    # Wait so backlog things happen
+                    await trio.sleep(1)
+            except KeyboardInterrupt:
+                print("Shutting down client from keyboard interrupt.")
                 await event_manager.raise_event(
-                    Event("client_connect", (host, port)),
+                    Event("network_stop", None),
                 )
-                print(f"Connected to server {host}:{port}")
-                try:
-                    while client.running:  # noqa: ASYNC110
-                        # Wait so backlog things happen
-                        await trio.sleep(1)
-                except KeyboardInterrupt:
-                    print("Shutting down client from keyboard interrupt.")
-                    await event_manager.raise_event(
-                        Event("network_stop", None),
-                    )
-        print(f"Disconnected from server {host}:{port}")
-        client.unbind_components()
+    print(f"Disconnected from server {host}:{port}")
+    client.unbind_components()
 
 
-async def run_client_in_local_servers() -> None:
+async def run_client_in_local_servers(
+    websocket_url: str,
+) -> None:
     """Run client in local servers."""
     print("Watching for advertisements...\n(CTRL + C to quit)")
     try:
@@ -110,14 +304,40 @@ async def run_client_in_local_servers() -> None:
                 main_nursery,
                 "client",
             )
+
+            needs_retry_connect = False
+
+            def handshake_failure_callback() -> None:
+                """Handle websocket handshake failure."""
+                nonlocal needs_retry_connect
+                needs_retry_connect = True
+                print("Websocket handshake failure.")
+
+            neuro_component = NeuroComponent(
+                handshake_failure_callback=handshake_failure_callback,
+            )
+            event_manager.add_component(neuro_component)
+
+            await event_manager.raise_event(
+                Event("neuro_connect", websocket_url),
+            )
+
             while True:
                 advertisements = set(await read_advertisements())
                 for motd, server in advertisements:
                     print(f"Found server ({motd = })")
-                    await run_client(event_manager, *server)
-                    break
-                if not advertisements:
-                    await trio.sleep(1)
+                    if neuro_component.not_connected:
+                        print("Neuro not connected, skip join.")
+                        if needs_retry_connect:
+                            print("Attempting to join Neuro websocket server.")
+                            needs_retry_connect = False
+                            await event_manager.raise_event(
+                                Event("neuro_connect", websocket_url),
+                            )
+                    else:
+                        await run_client(event_manager, *server)
+                        break
+                await trio.sleep(1)
     except BaseExceptionGroup as exc:
         for ex in exc.exceptions:
             if isinstance(ex, KeyboardInterrupt):
@@ -130,8 +350,11 @@ async def run_client_in_local_servers() -> None:
 def cli_run() -> None:
     """Run ComputerPlayer clients in local servers."""
     print(f"{__title__} v{__version__}\nProgrammed by {__author__}.\n")
+
+    websocket_url = "ws://localhost:8000"
+
     try:
-        trio.run(run_client_in_local_servers)
+        trio.run(run_client_in_local_servers, websocket_url)
     except Exception:
         traceback.print_exc()
 
