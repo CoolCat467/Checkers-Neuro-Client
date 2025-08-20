@@ -8,13 +8,12 @@
 
 <!-- END BADGIE TIME -->
 
-## As of writing, currently a Work in Progress
-
 ## Installation
-Ensure Python 3 is installed, and use pip to install this project.
+Ensure Python 3 is installed, and use uv to install this project.
 
 ```bash
-pip install git+https://github.com/CoolCat467/Checkers-Neuro-Client.git
+pip install uv
+uv pip install git+https://github.com/CoolCat467/Checkers-Neuro-Client.git
 ```
 
 ## Commands
