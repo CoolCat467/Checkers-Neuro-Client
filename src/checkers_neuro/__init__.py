@@ -38,7 +38,7 @@ from libcomponent.component import (
     ExternalRaiseManager,
 )
 from neuro_api.command import Action as CommandAction
-from neuro_api.event import NeuroAPIComponent
+from neuro_api.trio_ws import TrioNeuroAPIComponent
 
 if sys.version_info < (3, 11):
     from exceptiongroup import BaseExceptionGroup
@@ -88,8 +88,13 @@ class ComputerPlayer(machine_client.BaseRemoteState):
     ) -> None:
         """Perform action on internal state and perform our turn if possible."""
         from_pos, to_pos, turn = event.data
+        # types: has-type error: Cannot determine type of "state"
         action = self.state.action_from_points(from_pos, to_pos)
+        # types: ^^^^^^^^^^
+        # types: misc error: Trying to assign name "state" that is not in "__slots__" of type "checkers_neuro.ComputerPlayer"
+        # types: has-type error: Cannot determine type of "state"
         self.state = self.state.perform_action(action)
+        # types: ^   ^^^^^^^^^^
         ##        print(f'{turn = }')
         if turn == self.playing_as:
             await self.base_perform_turn()
@@ -117,7 +122,9 @@ class ComputerPlayer(machine_client.BaseRemoteState):
             ),
         )
 
+    # types: no-any-unimported error: Argument 2 to "handle_submit_move" becomes "Event[Any]" due to an unfollowed import
     async def handle_submit_move(self, event: Event[GameAction]) -> None:
+        # types: ^^^^^^^^^^^^^^^^^^^^^^^^
         """Handle submit move event."""
         action = event.data
         await self.perform_action(action)
@@ -133,7 +140,9 @@ class ComputerPlayer(machine_client.BaseRemoteState):
         )
 
 
+# types: no-any-unimported error: Argument 1 to "build_state_context" becomes "Any" due to an unfollowed import
 def build_state_context(state: State) -> str:
+    # types: ^^^^^^^^^^^^^^
     """Build game state context."""
     width, height = state.size
     separator = "═" * width
@@ -153,7 +162,7 @@ def build_state_context(state: State) -> str:
     return "\n".join(lines)
 
 
-class NeuroComponent(NeuroAPIComponent):
+class NeuroComponent(TrioNeuroAPIComponent):
     """Neuro Component."""
 
     __slots__ = ("handshake_failure_callback",)
@@ -209,7 +218,9 @@ class NeuroComponent(NeuroAPIComponent):
             return
         self.handshake_failure_callback()
 
+    # types: no-any-unimported error: Argument 2 to "build_game_action_fires" becomes "Any" due to an unfollowed import
     def build_game_action_fires(
+        # types: ^^^^^^^^^^^^^^^^^
         self,
         game_action: GameAction,
     ) -> Callable[[NeuroAction], Awaitable[tuple[bool, str | None]]]:
@@ -231,6 +242,7 @@ class NeuroComponent(NeuroAPIComponent):
         return trigger_game_action
 
     @staticmethod
+    # types: no-any-unimported error: Argument 1 to "game_action_to_command_action" becomes "Any" due to an unfollowed import
     def game_action_to_command_action(
         game_action: GameAction,
     ) -> CommandAction:
@@ -244,6 +256,7 @@ class NeuroComponent(NeuroAPIComponent):
             schema={},
         )
 
+    # types: no-any-unimported error: Argument 2 to "handle_need_take_action" becomes "Event[Any]" due to an unfollowed import
     async def handle_need_take_action(self, event: Event[State]) -> None:
         """Handle need to take action event."""
         state = event.data

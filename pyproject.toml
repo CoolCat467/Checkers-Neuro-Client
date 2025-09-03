@@ -34,7 +34,7 @@ classifiers = [
 keywords = ["idle", "extension", "development", "reload"]
 dependencies = [
     "checkers",
-    "neuro-api>=1.1.0",
+    "neuro-api>=2.0.0",
 ]
 
 [tool.setuptools.dynamic]
