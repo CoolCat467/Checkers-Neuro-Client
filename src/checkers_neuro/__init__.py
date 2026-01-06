@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 
 import trio
 from checkers.client import read_advertisements
+from checkers.state import Action as GameAction
 from checkers_computer_players import machine_client
 from libcomponent.component import (
     Event,
@@ -46,7 +47,7 @@ if sys.version_info < (3, 11):
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from checkers.state import Action as GameAction, Pos, State
+    from checkers.state import Pos, State
     from neuro_api.api import NeuroAction
     from trio_websocket import WebSocketConnection
 
@@ -88,13 +89,8 @@ class ComputerPlayer(machine_client.BaseRemoteState):
     ) -> None:
         """Perform action on internal state and perform our turn if possible."""
         from_pos, to_pos, turn = event.data
-        # types: has-type error: Cannot determine type of "state"
-        action = self.state.action_from_points(from_pos, to_pos)
-        # types: ^^^^^^^^^^
-        # types: misc error: Trying to assign name "state" that is not in "__slots__" of type "checkers_neuro.ComputerPlayer"
-        # types: has-type error: Cannot determine type of "state"
+        action = GameAction(from_pos, to_pos)
         self.state = self.state.perform_action(action)
-        # types: ^   ^^^^^^^^^^
         ##        print(f'{turn = }')
         if turn == self.playing_as:
             await self.base_perform_turn()
@@ -122,9 +118,7 @@ class ComputerPlayer(machine_client.BaseRemoteState):
             ),
         )
 
-    # types: no-any-unimported error: Argument 2 to "handle_submit_move" becomes "Event[Any]" due to an unfollowed import
     async def handle_submit_move(self, event: Event[GameAction]) -> None:
-        # types: ^^^^^^^^^^^^^^^^^^^^^^^^
         """Handle submit move event."""
         action = event.data
         await self.perform_action(action)
@@ -140,23 +134,20 @@ class ComputerPlayer(machine_client.BaseRemoteState):
         )
 
 
-# types: no-any-unimported error: Argument 1 to "build_state_context" becomes "Any" due to an unfollowed import
 def build_state_context(state: State) -> str:
-    # types: ^^^^^^^^^^^^^^
     """Build game state context."""
     width, height = state.size
-    separator = "═" * width
+    separator = "══" * width
 
     lines = ["Current game board:"]
     lines.append(f"╔{separator}╗")
-    lines.extend(
-        f"║{line.replace(' ', '░')}║" for line in str(state).splitlines()
-    )
+    lines.extend(f"║{line}║" for line in str(state).splitlines())
     lines.append(f"╚{separator}╝")
-    lines.append("`+` -> Black Pawn")
-    lines.append("`-` -> Red Pawn")
-    lines.append("`O` -> Black King")
-    lines.append("`X` -> Red King")
+    lines.append("`()` -> Black Pawn")
+    lines.append("`><` -> Red Pawn")
+    lines.append("`O┤` -> Black King")
+    lines.append("`X┤` -> Red King")
+    lines.append("`▒▒` -> Open tile")
     lines.append("Top-left is (0, 0), x is row, y is column")
     lines.append(f"({width - 1}, {height - 1}) is bottom right")
     return "\n".join(lines)
@@ -218,9 +209,7 @@ class NeuroComponent(TrioNeuroAPIComponent):
             return
         self.handshake_failure_callback()
 
-    # types: no-any-unimported error: Argument 2 to "build_game_action_fires" becomes "Any" due to an unfollowed import
     def build_game_action_fires(
-        # types: ^^^^^^^^^^^^^^^^^
         self,
         game_action: GameAction,
     ) -> Callable[[NeuroAction], Awaitable[tuple[bool, str | None]]]:
@@ -242,7 +231,6 @@ class NeuroComponent(TrioNeuroAPIComponent):
         return trigger_game_action
 
     @staticmethod
-    # types: no-any-unimported error: Argument 1 to "game_action_to_command_action" becomes "Any" due to an unfollowed import
     def game_action_to_command_action(
         game_action: GameAction,
     ) -> CommandAction:
@@ -256,7 +244,6 @@ class NeuroComponent(TrioNeuroAPIComponent):
             schema={},
         )
 
-    # types: no-any-unimported error: Argument 2 to "handle_need_take_action" becomes "Event[Any]" due to an unfollowed import
     async def handle_need_take_action(self, event: Event[State]) -> None:
         """Handle need to take action event."""
         state = event.data
